@@ -11,6 +11,7 @@
 
 import torch
 from scene import Scene
+import numpy as np
 import os
 from tqdm import tqdm
 from os import makedirs
@@ -20,6 +21,7 @@ from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
+from diff_gaussian_rasterization import _C 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
     SPARSE_ADAM_AVAILABLE = True
@@ -35,15 +37,45 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)["render"]
+        results = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)
+        rendering = results["render"]
         gt = view.original_image[0:3, :, :]
 
         if args.train_test_exp:
             rendering = rendering[..., rendering.shape[-1] // 2:]
             gt = gt[..., gt.shape[-1] // 2:]
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        # Create image filename and save rendered image
+        image_filename = '{0:05d}'.format(idx) + ".png"
+        torchvision.utils.save_image(rendering, os.path.join(render_path, image_filename))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, image_filename))
+        
+        try:
+            print("Checking for intermediate data...")
+            if "geom_buffer" in results and "num_points" in results:
+                print(f"Exporting intermediate data for {results['num_points']} points")
+                
+                # Create a directory for this specific image's intermediate data
+                output_dir = os.path.join(render_path, 'intermediate_data', '{0:05d}'.format(idx))
+                makedirs(output_dir, exist_ok=True)
+                
+                # Call our export function
+                means2D, conic_opacity, rgb, depths = _C.export_intermediate_data(
+                    results["num_points"],
+                    results["geom_buffer"]
+                )
+                
+                # Save the data to files
+                np.save(os.path.join(output_dir, "means2D.npy"), means2D.cpu().numpy())
+                np.save(os.path.join(output_dir, "conic_opacity.npy"), conic_opacity.cpu().numpy())
+                np.save(os.path.join(output_dir, "rgb.npy"), rgb.cpu().numpy())
+                np.save(os.path.join(output_dir, "depths.npy"), depths.cpu().numpy())
+                
+                print(f"Intermediate data saved to {output_dir}")
+            else:
+                print("No geometry buffer available in the render result")
+        except Exception as e:
+            print(f"Error exporting data: {e}")
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():

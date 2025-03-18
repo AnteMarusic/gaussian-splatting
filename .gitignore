@@ -8,3 +8,5 @@ tensorboard_3d
 screenshots
 dataset/
 eval/
+sshkey
+sshkey.pub
